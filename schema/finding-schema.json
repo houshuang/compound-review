@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["findings"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "line", "severity", "category", "summary", "rationale", "suggested_fix"],
+        "properties": {
+          "file": { "type": "string", "description": "Repo-relative path" },
+          "line": { "type": "integer", "description": "Primary line number; 0 if file-level" },
+          "severity": { "type": "string", "enum": ["blocker", "high", "medium", "low", "nit"] },
+          "category": {
+            "type": "string",
+            "description": "One of: correctness, security, performance, structure, testing, types, docs, style"
+          },
+          "summary": { "type": "string", "description": "One-sentence statement of the issue" },
+          "rationale": { "type": "string", "description": "Concrete failure scenario or maintenance cost" },
+          "suggested_fix": { "type": "string", "description": "Concrete fix; empty string if none" }
+        }
+      }
+    }
+  }
+}
