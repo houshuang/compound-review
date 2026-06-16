@@ -9,6 +9,18 @@ It is a personal Claude Code skill: invoke it in a session with `/compound-revie
 branch/PR you want reviewed. `SKILL.md` is the agent-facing runbook; this README is the
 human-facing "what it is and how it works."
 
+## Install
+
+Clone into your Claude Code skills directory, then invoke `/compound-review` in any repo:
+
+```bash
+git clone https://github.com/houshuang/compound-review.git ~/.claude/skills/compound-review
+```
+
+The findings corpus and run artifacts are written to `~/.claude/compound-review/` (outside the
+skill dir), so your review data never lives in this repo. See **Requirements** below for the
+Codex/Gemini CLIs and the optional `limbic` integration.
+
 ## Why a panel instead of one reviewer
 
 Two empirical facts (from the LLM-review literature, and reproduced in this tool's own corpus)

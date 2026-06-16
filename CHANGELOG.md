@@ -42,9 +42,9 @@ Tuning pass driven by the first 8 runs of corpus data (~156 findings).
 
 - **Carryover**: `init` now surfaces open confirmed/plausible findings from prior runs that
   touch files in the current diff (and returns them in the JSON), so follow-up branches stop
-  re-discovering the same bugs. Corpus: StreamingHandler.ts was flagged 24× across 4 runs.
+  re-discovering the same bugs. (Corpus: one hot file was flagged 24× across 4 runs.)
 - **`finish` warns on open blocking findings** — fixes routinely landed after the run
-  (cheap-tier-router: 3 confirmed highs fixed by later commits, never marked), so `finish`
+  (one run had 3 confirmed highs fixed by later commits but never marked), so `finish`
   now lists them for mark-fixed/wontfix triage instead of silently closing.
 - **`wontfix` verdict** (+ `set-verdict` choices validation). Refuted/wontfix locations are
   excluded from the blocking gate and shown in a "Dismissed" report section.
@@ -67,7 +67,7 @@ Tuning pass driven by the first 8 runs of corpus data (~156 findings).
 
 ## 0.1.0 — 2026-06-08
 
-Initial build. Validated on PR #5349 (deferred-tool-loading) and a second branch.
+Initial build. Validated on two real PR branches.
 
 - Multi-model panel: Claude (code-review/thermo-nuclear/security) + Codex
   (correctness/security/edge-cases) + opt-in Gemini.
