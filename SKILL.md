@@ -73,7 +73,7 @@ Launch ALL reviewers concurrently. Three mechanisms:
   ```bash
   python3 $HARNESS run-gemini --run-id $RID --run-dir $RD --name gemini-correctness --prompt-file $PROMPTS/correctness.md --base origin/main
   ```
-- **Claude lenses** — spawn via the Agent/Skill tools: `/code-review high`; a `code-reviewer` agent with the prompt from `claude-prompts/thermo-nuclear.md`; and `/security-review` **only if** the diff touches auth/permissions, logging, LLM-bound payloads, or tenant/user boundaries (otherwise skip it — codex-security covers the lens). When each returns, **write its findings as a contract file** to `$RD/raw/round-0/<reviewer>.json` using the schema in this skill's `compound_review.py` docstring (reviewer, model_family:"claude", model, tokens, findings[]). Map each finding's severity/category to the controlled vocab; include a `verdict` if the reviewer verified it.
+- **Claude lenses** — spawn via the Agent/Skill tools: `/code-review high`; a `code-reviewer` agent with the prompt from `claude-prompts/thermo-nuclear.md`; and `/security-review` **only if** the diff touches auth/permissions, logging, LLM-bound payloads, or tenant/user boundaries (otherwise skip it — codex-security covers the lens). When each returns, **write its findings as a contract file** to `$RD/raw/round-0/<reviewer>.json` using the schema in this skill's `compound_review.py` docstring (reviewer, model_family:"claude", model, tokens, findings[]). Map each finding's severity/category to the controlled vocab; include a `verdict` if the reviewer verified it. **Every finding needs an `evidence` field** — the actual code lines (with file:line) that prove the issue, quoted not paraphrased; it's required by the schema and is what makes cross-family verification cheap. Drop any finding you can't back with quoted code.
 
   **Token honesty:** leave the Claude lenses' token fields `null` and set `model_family:"claude"`. These run in-session on the flat-rate Max plan; their tokens aren't metered and the corpus has confirmed across 11 runs that in-session usage is never recoverable. Analytics now shows Claude lenses as `Max`/`flat` (judged by finds/confirm/blk✓, not find/Mtok) — so a `null` is correct and complete here, **never** a hand-estimate, which only corrupts the Codex-vs-Codex cost comparison.
 
@@ -90,6 +90,8 @@ This dedups by `file:linebucket:category`, computes `agreement_n` (how many revi
 ### 4. Verify blockers (required, cross-family)
 
 For each blocking finding not already `confirmed`, spawn one **adversarial** verifier (its job is to refute, not nod along). **Verify across model families** — this is the bias-reduction lever, and the corpus proved it matters: through v0.2.2 all 9 refutes landed on Codex findings and zero on Claude's, because a Claude verifier was judging Claude findings (in-family leniency inflates precision).
+
+Both verifier prompts now check for **intentional trade-offs** — a finding that complains about a deliberate choice (one the commit messages, code comments, or AGENTS.md/CLAUDE.md explain on purpose) is refuted, not confirmed. So the verifier must have the commit log available: it reads `git log <base>..HEAD` itself (the Codex verifier is told to; for the Claude verifier, ensure it can run git or paste the commit messages into its context).
 
 - **For findings raised by a Codex lens** → verify with a **Claude** agent using `claude-prompts/verifier.md`.
 - **For findings raised by a Claude lens** (`code-review-high`, `thermo-nuclear`, `security-review`) → verify with **Codex** so a different family checks it:

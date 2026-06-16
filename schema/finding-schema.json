@@ -8,7 +8,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["file", "line", "severity", "category", "summary", "rationale", "suggested_fix"],
+        "required": ["file", "line", "severity", "category", "summary", "rationale", "evidence", "suggested_fix"],
         "properties": {
           "file": { "type": "string", "description": "Repo-relative path" },
           "line": { "type": "integer", "description": "Primary line number; 0 if file-level" },
@@ -19,7 +19,22 @@
           },
           "summary": { "type": "string", "description": "One-sentence statement of the issue" },
           "rationale": { "type": "string", "description": "Concrete failure scenario or maintenance cost" },
-          "suggested_fix": { "type": "string", "description": "Concrete fix; empty string if none" }
+          "evidence": {
+            "type": "string",
+            "description": "The actual code snippet (with file:line) that proves the issue exists; quote the lines you are flagging, not a paraphrase"
+          },
+          "suggested_fix": { "type": "string", "description": "Concrete fix; empty string if none" },
+          "verdict": {
+            "type": "string",
+            "enum": ["confirmed", "plausible", "refuted"],
+            "description": "Set only by a verifier pass; omit when first finding an issue"
+          },
+          "confidence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Optional 0-100 certainty; finders should only report issues they hold at >=80"
+          }
         }
       }
     }

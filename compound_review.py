@@ -22,7 +22,8 @@ Contract file shape (one per reviewer per round), written to <run_dir>/raw/round
   "cost_usd":     null,                        # optional; computed from prices.json if absent
   "findings": [
     {"file":"a.ts","line":883,"severity":"blocker","category":"correctness",
-     "summary":"...","rationale":"...","suggested_fix":"...","verdict":"confirmed"}
+     "summary":"...","rationale":"...","evidence":"a.ts:883  if (!resp) return  // quoted code",
+     "suggested_fix":"...","verdict":"confirmed"}
   ]
 }
 """
@@ -277,7 +278,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
           reviewer TEXT NOT NULL, model_family TEXT,
           file TEXT, line INTEGER, dedup_key TEXT,
           category TEXT, category_raw TEXT, severity TEXT, severity_raw TEXT,
-          summary TEXT, rationale TEXT, suggested_fix TEXT,
+          summary TEXT, rationale TEXT, suggested_fix TEXT, evidence TEXT,
           verdict TEXT DEFAULT 'unverified',
           verified_severity TEXT,
           agreement_n INTEGER DEFAULT 1,
@@ -293,6 +294,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(finding)").fetchall()}
     if "verified_severity" not in cols:
         conn.execute("ALTER TABLE finding ADD COLUMN verified_severity TEXT")
+    if "evidence" not in cols:
+        conn.execute("ALTER TABLE finding ADD COLUMN evidence TEXT")
     conn.commit()
 
 
@@ -463,10 +466,14 @@ def cmd_run_codex(args: argparse.Namespace) -> None:
     prompt = (
         f"{persona}\n\n"
         f"Run `git diff {args.base}...HEAD` yourself in the repo to obtain the diff under review, "
-        f"then review it. Respond with ONLY a JSON object matching the provided output schema: "
+        f"and `git log {args.base}..HEAD` to read the commit messages. Then review it. A change "
+        f"the commit messages or code comments explain as deliberate (\"fixes\", \"to avoid\", "
+        f"\"instead of\") is an intentional trade-off, not a bug — do not flag it. "
+        f"Respond with ONLY a JSON object matching the provided output schema: "
         f'{{"findings": [ ... ]}}. Each finding needs file, line, severity '
-        f"(blocker|high|medium|low|nit), category, summary, rationale, suggested_fix. "
-        f"Do not include prose outside the JSON."
+        f"(blocker|high|medium|low|nit), category, summary, rationale, evidence, suggested_fix. "
+        f"`evidence` must quote the actual code lines that prove the issue (with file:line), "
+        f"not a paraphrase. Do not include prose outside the JSON."
     )
 
     last_msg_path = raw_dir / f"{args.name}.lastmsg.txt"
@@ -720,7 +727,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
                 "category": cat, "category_raw": f.get("category"),
                 "severity": norm_sev(f.get("severity")), "severity_raw": f.get("severity"),
                 "summary": f.get("summary"), "rationale": f.get("rationale"),
-                "suggested_fix": f.get("suggested_fix"),
+                "suggested_fix": f.get("suggested_fix"), "evidence": f.get("evidence"),
                 "verdict": (f.get("verdict") or "unverified").lower(),
             })
 
@@ -743,11 +750,11 @@ def cmd_ingest(args: argparse.Namespace) -> None:
             """INSERT INTO finding
             (run_id, round, reviewer, model_family, file, line, dedup_key,
              category, category_raw, severity, severity_raw,
-             summary, rationale, suggested_fix, verdict, agreement_n)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             summary, rationale, suggested_fix, evidence, verdict, agreement_n)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (args.run_id, args.round, p["reviewer"], p["family"], p["file"], p["line"],
              p["dedup_key"], p["category"], p["category_raw"], p["severity"], p["severity_raw"],
-             p["summary"], p["rationale"], p["suggested_fix"], p["verdict"],
+             p["summary"], p["rationale"], p["suggested_fix"], p["evidence"], p["verdict"],
              len(by_key[p["dedup_key"]])),
         )
     conn.commit()

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 — 2026-06-16
+
+Precision borrows from [diffray](https://github.com/strelov1/diffray), which converged on the
+same multi-agent + validation design — three of its prompt-craft ideas, adapted.
+
+- **Intentional-trade-off filtering in both verifiers.** A finding that complains about a
+  deliberate decision is a false positive ("the problem is the solution to a different
+  problem"). Verifiers now read commit messages (`git log <base>..HEAD`), code comments, and
+  AGENTS.md/CLAUDE.md (incl. any "what NOT to flag" list); an acknowledged trade-off is
+  refuted. Directly targets the corpus's weakest axis (codex-security precision ~46%).
+- **Required `evidence` field** on every finding — the actual code lines (with file:line) that
+  prove the issue, quoted not paraphrased. Raises finder precision and makes cross-family
+  verification cheap (the verifier starts from the snippet). Persisted to the corpus
+  (`finding.evidence`, auto-migrated).
+- **Optional `verdict`/`confidence` fields** added to the schema. This also fixes a latent bug:
+  the Codex verifier (`verify.md`) returns a `verdict`, which the strict `additionalProperties:
+false` schema would previously have rejected. `confidence` (0-100) is available for finders
+  but not required — the verdict + agreement system already covers conviction.
+
 ## 0.3.0 — 2026-06-16
 
 The two highest-value improvements the 13-run analysis surfaced.

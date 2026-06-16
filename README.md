@@ -107,7 +107,7 @@ SQLite at `~/.claude/compound-review/findings.db` (run artifacts under
 `~/.claude/compound-review/runs/<run_id>/` — both **outside** this repo, so data is never
 committed). Three tables: `review_run` (branch/PR/SHA/diff-size), `reviewer_run` (per-reviewer
 tokens/cost/duration/num_findings), `finding` (file/line/category/severity/summary/verdict/
-agreement/was_fixed).
+agreement/evidence/was_fixed).
 
 Two ideas make the corpus trustworthy:
 
