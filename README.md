@@ -15,12 +15,12 @@ Two empirical facts (from the LLM-review literature, and reproduced in this tool
 drive the design:
 
 1. **Reviewers don't converge on findings — they're additive.** ~85–90% of findings are caught
-   by exactly one reviewer. So the value is *coverage* from diverse lenses/families, not
+   by exactly one reviewer. So the value is _coverage_ from diverse lenses/families, not
    consensus. Bias-reduction comes from disjoint model families (Claude vs GPT vs Gemini),
    not the same model with N prompts.
-2. **Iterating a fix→re-review loop past ~3 rounds *introduces* bugs.** So the loop is bounded
+2. **Iterating a fix→re-review loop past ~3 rounds _introduces_ bugs.** So the loop is bounded
    (cap 3), gates only on `blocker`/`high` (nits go to a backlog and never extend the loop),
-   and re-reviews are *scoped* ("are these prior blockers fixed, any new blocker?") rather than
+   and re-reviews are _scoped_ ("are these prior blockers fixed, any new blocker?") rather than
    fresh full-recall scans (which always invent new nits).
 
 ## Architecture
@@ -49,9 +49,9 @@ init ──► run reviewers (parallel) ──► ingest ──► synthesize pl
 - **Python 3.10+** (stdlib only — no pip deps required).
 - **Codex CLI** (`codex`) for the GPT lenses. On a ChatGPT-account login the `*-codex` models
   are rejected; the default resolves to `gpt-5.5` — control depth with `--effort xhigh`.
-- *Optional:* **Gemini CLI** (`gemini`) + `GEMINI_API_KEY` for a third family. See the Gemini
+- _Optional:_ **Gemini CLI** (`gemini`) + `GEMINI_API_KEY` for a third family. See the Gemini
   caveat below — it's opt-in.
-- *Optional:* **[limbic](https://github.com/…/limbic)** importable — unlocks semantic finding
+- _Optional:_ **[limbic](https://github.com/…/limbic)** importable — unlocks semantic finding
   dedup and central cost logging. Falls back gracefully when absent.
 
 ## Usage
@@ -104,11 +104,11 @@ Two ideas make the corpus trustworthy:
   lines, wording, and even different category labels); otherwise it's line-proximity clustering.
   `agreement_n` = how many distinct reviewers hit a cluster — multi-reviewer findings are your
   highest-confidence signal.
-- **Effective severity decouples three things** that used to be conflated in one label: *who
-  found it*, *is it real* (verdict), and *how bad is it* (impact). The loop gates on effective
+- **Effective severity decouples three things** that used to be conflated in one label: _who
+  found it_, _is it real_ (verdict), and _how bad is it_ (impact). The loop gates on effective
   severity — a verifier's severity wins, and a deterministic **promote-on-confirm** floors any
   confirmed correctness/security finding at `high`, so a real bug a reviewer lowballed as
-  "medium" can't hide in the backlog. The raw finder label is kept so you can *measure* drift.
+  "medium" can't hide in the backlog. The raw finder label is kept so you can _measure_ drift.
 
 `analytics` surfaces: categories most flagged, per-reviewer productivity (findings + confirmed/
 refuted + fresh tokens + cost + findings-per-Mtok), cross-reviewer agreement distribution,
@@ -117,7 +117,13 @@ single-reviewer %, severity drift per reviewer, and token/cost per run.
 ## Tuning knobs
 
 - `prices.json` — per-model $/Mtok for cost estimates (cache-aware).
-- `codex-prompts/*.md` — the differentiated Codex personas; add your own lenses freely.
+- `codex-prompts/*.md` — the differentiated Codex personas (correctness/security/edge-cases),
+  plus `verify.md`, the Codex-side adversarial verifier used to check _Claude_ findings
+  cross-family; add your own lenses freely.
+- `claude-prompts/*.md` — the stored Claude personas: `thermo-nuclear.md` (PR-level
+  organization & logic critique, max 3 findings, no line-level bugs) and `verifier.md`
+  (Claude-side adversarial verifier used to check _Codex_ findings — refuting is a first-class
+  outcome, recorded to the corpus). Verification is deliberately cross-family.
 - `SEM_THRESHOLD` (default 0.62) and `PROXIMITY_LINES` (60) in `compound_review.py` — dedup
   sensitivity.
 - Round cap (3) and the blocking/backlog split — encoded in `SKILL.md`'s design rules.

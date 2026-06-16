@@ -350,6 +350,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     repo = Path(root).name
 
     files = added = removed = 0
+    diff_paths: list[str] = []
     numstat = git(["diff", "--numstat", f"{base_sha}...HEAD"], cwd) if base_sha else ""
     for ln in numstat.splitlines():
         parts = ln.split("\t")
@@ -357,6 +358,7 @@ def cmd_init(args: argparse.Namespace) -> None:
             files += 1
             added += int(parts[0]) if parts[0].isdigit() else 0
             removed += int(parts[1]) if parts[1].isdigit() else 0
+            diff_paths.append(parts[2])
 
     pr_number = pr_title = pr_url = None
     try:
@@ -385,7 +387,33 @@ def cmd_init(args: argparse.Namespace) -> None:
          pr_number, pr_title, pr_url, files, added, removed, args.effort),
     )
     conn.commit()
+
+    # Carryover: open confirmed/plausible findings from prior runs of this repo that touch
+    # files in this diff. Surfaced so a follow-up branch doesn't re-discover them — the agent
+    # triages each (mark-fixed if this branch resolved it, wontfix if rejected, else plan it).
+    carryover = []
+    if diff_paths:
+        ph = ",".join("?" * len(diff_paths))
+        rows = conn.execute(
+            f"""SELECT f.run_id, f.dedup_key, f.file, f.line, f.severity, f.verdict,
+                       f.summary, r.branch
+                FROM finding f JOIN review_run r ON r.run_id = f.run_id
+                WHERE r.repo = ? AND f.run_id != ?
+                  AND f.verdict IN ('confirmed','plausible')
+                  AND COALESCE(f.was_fixed, 0) = 0
+                  AND f.file IN ({ph})
+                GROUP BY f.run_id, f.dedup_key
+                ORDER BY f.run_id""",
+            (repo, run_id, *diff_paths),
+        ).fetchall()
+        carryover = [dict(r) for r in rows]
     conn.close()
+
+    if carryover:
+        print(f"### Carryover — {len(carryover)} open finding(s) from prior runs touch this diff", file=sys.stderr)
+        for c in carryover:
+            print(f"  [{c['severity']}/{c['verdict']}] {c['file']}:{c['line']} ({c['branch']}) "
+                  f"run={c['run_id']} key={c['dedup_key']}\n    {c['summary'][:110]}", file=sys.stderr)
 
     out = {
         "run_id": run_id, "run_dir": str(run_dir),
@@ -395,6 +423,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         "pr_number": pr_number, "pr_url": pr_url,
         "diff_files": files, "diff_added": added, "diff_removed": removed,
         "schema_path": str(SCHEMA_PATH),
+        "carryover": carryover,
     }
     print(json.dumps(out, indent=2))
 
@@ -440,54 +469,70 @@ def cmd_run_codex(args: argparse.Namespace) -> None:
         f"Do not include prose outside the JSON."
     )
 
-    cmd = [
-        "codex", "exec", "--json", "--skip-git-repo-check",
-        "--sandbox", "read-only", "-C", repo_root,
-        "-c", f"model_reasoning_effort={args.effort}",
-        "--output-schema", str(SCHEMA_PATH),
-        "-o", str(raw_dir / f"{args.name}.lastmsg.txt"),
-    ]
-    if args.model:
-        cmd += ["-m", args.model]
-    cmd.append(prompt)
+    last_msg_path = raw_dir / f"{args.name}.lastmsg.txt"
+
+    def invoke(extra: str) -> tuple[dict, str]:
+        """Run codex once; return (token-delta, stderr). Writes lastmsg to last_msg_path."""
+        cmd = [
+            "codex", "exec", "--json", "--skip-git-repo-check",
+            "--sandbox", "read-only", "-C", repo_root,
+            "-c", f"model_reasoning_effort={args.effort}",
+            "--output-schema", str(SCHEMA_PATH),
+            "-o", str(last_msg_path),
+        ]
+        if args.model:
+            cmd += ["-m", args.model]
+        cmd.append(prompt + extra)
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        tok = {"input": 0, "cached_input": 0, "output": 0}
+        for ln in proc.stdout.splitlines():
+            try:
+                ev = json.loads(ln)
+            except Exception:
+                continue
+            if ev.get("type") == "turn.completed" and isinstance(ev.get("usage"), dict):
+                u = ev["usage"]
+                tok["input"] += u.get("input_tokens", 0) or 0
+                tok["cached_input"] += u.get("cached_input_tokens", 0) or 0
+                tok["output"] += u.get("output_tokens", 0) or 0
+        return tok, proc.stderr
 
     t0 = datetime.now()
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    duration_ms = int((datetime.now() - t0).total_seconds() * 1000)
-
-    # token usage: sum across turn.completed events in the JSONL on stdout
     tokens = {"input": 0, "cached_input": 0, "output": 0}
-    for ln in proc.stdout.splitlines():
-        try:
-            ev = json.loads(ln)
-        except Exception:
-            continue
-        if ev.get("type") == "turn.completed" and isinstance(ev.get("usage"), dict):
-            u = ev["usage"]
-            tokens["input"] += u.get("input_tokens", 0) or 0
-            tokens["cached_input"] += u.get("cached_input_tokens", 0) or 0
-            tokens["output"] += u.get("output_tokens", 0) or 0
+    attempts = 0
+    parsed = None
+    stderr = ""
+    # Codex intermittently wraps/prefixes its JSON (~7% of runs). Retry once with a
+    # stricter instruction before recording failure; tokens accumulate across attempts.
+    for extra in ("", "\n\nIMPORTANT: your previous reply could not be parsed. Reply with ONLY "
+                      "the raw JSON object — no markdown fences, no prose before or after."):
+        attempts += 1
+        tok, stderr = invoke(extra)
+        for k in tokens:
+            tokens[k] += tok[k]
+        parsed = _extract_json_block(last_msg_path.read_text()) if last_msg_path.exists() else None
+        if parsed is not None:
+            break
+    duration_ms = int((datetime.now() - t0).total_seconds() * 1000)
     tokens["total"] = tokens["input"] + tokens["output"]
 
-    last_msg_path = raw_dir / f"{args.name}.lastmsg.txt"
-    parsed = _extract_json_block(last_msg_path.read_text()) if last_msg_path.exists() else None
     findings, ok, error = [], True, None
     if parsed is None:
-        ok, error = False, "could not parse JSON findings from codex output"
-        (raw_dir / f"{args.name}.stderr.txt").write_text(proc.stderr[-4000:])
+        ok, error = False, f"could not parse JSON findings from codex output (after {attempts} attempts)"
+        (raw_dir / f"{args.name}.stderr.txt").write_text(stderr[-4000:])
     else:
         findings = parsed.get("findings", parsed if isinstance(parsed, list) else [])
 
     contract = {
         "reviewer": args.name, "model_family": "gpt",
         "model": args.model or "gpt-5.5", "effort": args.effort,
-        "ok": ok, "error": error, "duration_ms": duration_ms,
+        "ok": ok, "error": error, "duration_ms": duration_ms, "attempts": attempts,
         "tokens": tokens, "findings": findings,
     }
     out_path = raw_dir / f"{args.name}.json"
     out_path.write_text(json.dumps(contract, indent=2))
     print(json.dumps({
-        "reviewer": args.name, "ok": ok, "error": error,
+        "reviewer": args.name, "ok": ok, "error": error, "attempts": attempts,
         "num_findings": len(findings), "tokens": tokens,
         "contract": str(out_path),
     }, indent=2))
@@ -768,8 +813,12 @@ def _print_report(conn: sqlite3.Connection, run_id: str, round_filter: int | Non
         })
     items.sort(key=lambda i: (SEVERITY_RANK.get(i["severity"], 5), -i["agreement"]))
 
-    blocking = [i for i in items if i["severity"] in BLOCKING]
-    backlog = [i for i in items if i["severity"] not in BLOCKING]
+    # A location where every reviewer's row is refuted/wontfix is dismissed — it must not
+    # gate the loop no matter its severity label.
+    dismissed = [i for i in items if i["verdicts"] and i["verdicts"] <= {"refuted", "wontfix"}]
+    live = [i for i in items if i not in dismissed]
+    blocking = [i for i in live if i["severity"] in BLOCKING]
+    backlog = [i for i in live if i["severity"] not in BLOCKING]
     print(f"\nBlocking findings ({len(blocking)}):  [loop on these]")
     for i in blocking:
         agree = f"x{i['agreement']}" if i["agreement"] > 1 else "  "
@@ -783,6 +832,10 @@ def _print_report(conn: sqlite3.Connection, run_id: str, round_filter: int | Non
     for i in backlog:
         agree = f"x{i['agreement']}" if i["agreement"] > 1 else "  "
         print(f"  [{i['severity']:<7}] {agree} {i['file']}:{i['line']}  {i['summary'][:66]}")
+    if dismissed:
+        print(f"\nDismissed (refuted/wontfix, {len(dismissed)}):")
+        for i in dismissed:
+            print(f"  [{i['severity']:<7}]    {i['file']}:{i['line']}  {i['summary'][:66]}")
     print()
 
 
@@ -826,6 +879,26 @@ def cmd_mark_fixed(args: argparse.Namespace) -> None:
 
 def cmd_finish(args: argparse.Namespace) -> None:
     conn = connect()
+    # A finish with open blocking findings is usually stale bookkeeping (the fix happened
+    # outside the loop) — list them so the agent marks each fixed/wontfix before closing.
+    open_blocking = conn.execute(
+        """SELECT dedup_key, file, line, severity, verified_severity, verdict, summary
+           FROM finding
+           WHERE run_id = ?
+             AND COALESCE(verified_severity, severity) IN ('blocker','high')
+             AND verdict NOT IN ('refuted','wontfix')
+             AND COALESCE(was_fixed, 0) = 0
+           GROUP BY dedup_key""",
+        (args.run_id,),
+    ).fetchall()
+    if open_blocking:
+        print(f"⚠ {len(open_blocking)} blocking finding(s) still open on this run. "
+              f"For each: `mark-fixed` if resolved (in-loop or by later commits), "
+              f"`set-verdict --verdict wontfix` if deliberately rejected, or note why it stays open:")
+        for r in open_blocking:
+            sev = r["verified_severity"] or r["severity"]
+            print(f"  [{sev}/{r['verdict']}] {r['file']}:{r['line']} key={r['dedup_key']}\n"
+                  f"    {r['summary'][:110]}")
     conn.execute("UPDATE review_run SET status='complete', notes=? WHERE run_id=?",
                  (args.notes, args.run_id))
     conn.commit()
@@ -845,14 +918,22 @@ def cmd_analytics(args: argparse.Namespace) -> None:
         print(f"  {r['n']:>4}  {r['category']:<16} {r['severity']}")
 
     print("\n### Per-reviewer productivity & cost")
-    print(f"  {'reviewer':<26} {'runs':>4} {'finds':>6} {'confirm':>7} {'refuted':>7} "
+    print("  (blk✓ = confirmed blocker/high — severity-weighted value; a low-volume reviewer")
+    print("   with blk✓ catches is earning its seat. Claude lenses run in-session on the")
+    print("   flat-rate Max plan — tokens aren't metered there, so cost shows 'Max'; judge")
+    print("   them by finds/confirm/blk✓, not find/Mtok. Only Codex $ is real marginal spend.)")
+    print(f"  {'reviewer':<26} {'runs':>4} {'finds':>6} {'confirm':>7} {'refuted':>7} {'blk✓':>5} "
           f"{'tokens':>10} {'cost$':>8} {'find/Mtok':>9}")
     for r in conn.execute(
         """SELECT rr.reviewer,
+                  COALESCE(MAX(rr.model_family),'') family,
                   COUNT(DISTINCT rr.run_id) runs,
                   COALESCE(SUM(rr.num_findings),0) finds,
                   COALESCE(SUM(MAX(rr.input_tokens-rr.cached_input_tokens,0)+rr.output_tokens),0) tokens,
-                  COALESCE(SUM(rr.cost_usd),0) cost
+                  COALESCE(SUM(rr.cost_usd),0) cost,
+                  SUM(CASE WHEN rr.ok=1 THEN 1 ELSE 0 END) ok_rows,
+                  SUM(CASE WHEN rr.ok=1 AND COALESCE(rr.input_tokens,0)+COALESCE(rr.output_tokens,0) > 0
+                           THEN 1 ELSE 0 END) tok_rows
            FROM reviewer_run rr GROUP BY rr.reviewer ORDER BY finds DESC"""):
         conf = conn.execute(
             "SELECT COUNT(*) c FROM finding WHERE reviewer=? AND verdict='confirmed'",
@@ -860,9 +941,38 @@ def cmd_analytics(args: argparse.Namespace) -> None:
         refu = conn.execute(
             "SELECT COUNT(*) c FROM finding WHERE reviewer=? AND verdict='refuted'",
             (r["reviewer"],)).fetchone()["c"]
-        fpm = (r["finds"] / (r["tokens"] / 1e6)) if r["tokens"] else 0
-        print(f"  {r['reviewer']:<26} {r['runs']:>4} {r['finds']:>6} {conf:>7} {refu:>7} "
-              f"{r['tokens']:>10} {r['cost']:>8.3f} {fpm:>9.1f}")
+        blk = conn.execute(
+            """SELECT COUNT(*) c FROM finding WHERE reviewer=? AND verdict='confirmed'
+               AND COALESCE(verified_severity, severity) IN ('blocker','high')""",
+            (r["reviewer"],)).fetchone()["c"]
+        if r["family"] == "claude":
+            # Claude lenses run in-session on the flat-rate Max plan; tokens unmetered by design.
+            tok_s, cost_s, fpm_s = f"{'—':>10}", f"{'Max':>8}", f"{'flat':>9}"
+        elif r["tokens"] and r["tok_rows"] == r["ok_rows"]:  # every successful run captured
+            tok_s, cost_s = f"{r['tokens']:>10}", f"{r['cost']:>8.3f}"
+            fpm_s = f"{r['finds'] / (r['tokens'] / 1e6):>9.1f}"
+        elif r["tokens"]:  # partial capture — a per-Mtok rate would be inflated
+            tok_s, cost_s = f"{r['tokens']:>9}+", f"{r['cost']:>7.3f}+"
+            fpm_s = f"{'partial':>9}"
+        else:
+            tok_s, cost_s, fpm_s = f"{'n/a':>10}", f"{'n/a':>8}", f"{'n/a':>9}"
+        print(f"  {r['reviewer']:<26} {r['runs']:>4} {r['finds']:>6} {conf:>7} {refu:>7} {blk:>5} "
+              f"{tok_s} {cost_s} {fpm_s}")
+
+    print("\n### Reviewer precision (of findings that got a verdict)")
+    print("  (confirm vs refute among verified findings — low precision + high refute = noisy")
+    print("   lens; but weigh against blk✓ above, since a recall lens trades precision for it.)")
+    for r in conn.execute(
+        """SELECT reviewer,
+                  SUM(verdict='confirmed') conf,
+                  SUM(verdict='refuted')   refu,
+                  SUM(verdict IN ('confirmed','plausible','refuted','wontfix')) verified
+           FROM finding GROUP BY reviewer
+           HAVING verified > 0 ORDER BY verified DESC"""):
+        decided = r["conf"] + r["refu"]
+        prec = f"{100*r['conf']/decided:.0f}%" if decided else "—"
+        print(f"  {r['reviewer']:<26} {r['conf']:>3} confirmed  {r['refu']:>3} refuted  "
+              f"→ {prec:>4} precision  ({r['verified']} verified)")
 
     print("\n### Cross-reviewer agreement (findings seen by N reviewers)")
     for r in conn.execute(
@@ -950,8 +1060,10 @@ def main() -> None:
     p.add_argument("--round", type=int, default=None); p.set_defaults(fn=cmd_report)
 
     p = sub.add_parser("set-verdict")
-    for a in ("--run-id", "--dedup-key", "--verdict"):
+    for a in ("--run-id", "--dedup-key"):
         p.add_argument(a, required=True)
+    p.add_argument("--verdict", required=True, type=str.lower,
+                   choices=["confirmed", "plausible", "refuted", "wontfix", "unverified"])
     p.add_argument("--severity", default=None,
                    help="verifier's impact assessment; overrides finder labels for gating")
     p.add_argument("--round", type=int, default=0); p.set_defaults(fn=cmd_set_verdict)
