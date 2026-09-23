@@ -17,6 +17,11 @@ Clone into your Claude Code skills directory, then invoke `/compound-review` in 
 git clone https://github.com/houshuang/compound-review.git ~/.claude/skills/compound-review
 ```
 
+Keep it at that path: `SKILL.md` calls the harness and prompts under
+`~/.claude/skills/compound-review/`. A running session picks up the new skill without a restart
+(unless `~/.claude/skills` itself is new, in which case restart once); run `/skills` to check
+that it is listed.
+
 The findings corpus and run artifacts are written to `~/.claude/compound-review/` (outside the
 skill dir), so your review data never lives in this repo. See **Requirements** below for the
 Codex/Gemini CLIs and the optional `limbic` integration.
@@ -59,11 +64,12 @@ init ──► run reviewers (parallel) ──► ingest ──► synthesize pl
 ## Requirements
 
 - **Python 3.10+** (stdlib only — no pip deps required).
-- **Codex CLI** (`codex`) for the GPT lenses. On a ChatGPT-account login the `*-codex` models
-  are rejected; the default resolves to `gpt-5.5` — control depth with `--effort xhigh`.
+- **Codex CLI** (`codex`), signed in, for the OpenAI lenses. The harness uses your Codex
+  account's default model; control depth with `--effort xhigh`, and pin a model with `--model`
+  only on an API-key login (a ChatGPT-account login rejects the `*-codex` models).
 - _Optional:_ **Gemini CLI** (`gemini`) + `GEMINI_API_KEY` for a third family. See the Gemini
   caveat below — it's opt-in.
-- _Optional:_ **[limbic](https://github.com/…/limbic)** importable — unlocks semantic finding
+- _Optional:_ **[limbic](https://github.com/houshuang/limbic)** importable — unlocks semantic finding
   dedup and central cost logging. Falls back gracefully when absent.
 
 ## Usage
@@ -150,7 +156,7 @@ Gemini timeout gracefully (failed contract, doesn't block the panel).
 
 ## limbic integration (optional)
 
-When `~/src/limbic` is importable the harness uses two pieces, and degrades gracefully without
+When the `limbic` package is importable (`pip install git+https://github.com/houshuang/limbic.git`) the harness uses two pieces, and degrades gracefully without
 them:
 
 - `amygdala.EmbeddingModel` + `greedy_centroid_cluster` → **semantic finding dedup**.
